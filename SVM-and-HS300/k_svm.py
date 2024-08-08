@@ -28,6 +28,9 @@ class SVM():
         数据准备，构建数据特征，并标记类别标签
         '''
         data = self.data
+        # 后3天的涨幅
+
+        # data的前几条数据index是1/4, 1/5, 1/6, 1/7， 1/10
         data['retn'] = data['close'].shift(-self.fw) / data['open'] - 1
         attr = pd.DataFrame()
         #构建四个个数据特征，用于刻画K线的形态，并考虑交易量的变化
@@ -36,22 +39,30 @@ class SVM():
         attr['close_low'] = data['close'] / data['low'] - 1
         attr['close_open'] = data['close'] / data['open'] - 1
         attr['vol_pct'] = data['volume'].pct_change()
+
+        # attr的前几条数据index是1/5, 1/6, 1/7， 1/10 (因为pct_change()之后dropna)
         attr.dropna(inplace= True)
         
         #将特征标准化
         for field in attr.columns:
             attr[field] = (attr[field] - attr[field].mean()) / attr[field].std()       
-        
+
         attrs = {}
         dates = attr.index
         bk = self.bk
         #用前3天的特征值来预测后3天的涨跌涨跌方向
         for i in range(bk, len(attr) - bk + 1):
+            # stack 压平所有的数据，得到一个一维的数据
+            # 第一条数据，1/5, 1/6, 1/7的因子数据
             attrs[dates[i-1]] = attr.iloc[i-bk : i, :].stack().values
         attrs = pd.DataFrame(attrs).T
+
+        # 第一条数据是 1/7-1/4的close
         attrs['change_fw'] = data['close'].shift(-self.fw) - data['close']
         #上涨标记为1，下跌标记为-1
         attrs['label'] = np.where(attrs['change_fw'] > 0, 1, -1)
+
+        # 删除change_fw列
         attrs.drop('change_fw', axis=1, inplace=True)
         return attrs
     
@@ -67,9 +78,14 @@ class SVM():
             test_data:
                 测试集
         '''
+
+        # 以10年数据作为训练数据
         begin = begin_year * self.year_days #训练集开始的位置
         end = begin + self.train_years * self.year_days #训练集结束的位置
+
+        # 准备数据（因子计算、预测label）
         attrs = self.data_pre()
+
         train_data = attrs.iloc[begin : end, :] #训练集
         test_data = attrs.iloc[end : end + self.year_days, :] #下一年数据为测试集
         return train_data, test_data
@@ -90,7 +106,11 @@ class SVM():
             最优的C参数，gamma参数和最优时的score(平均值)
             优化的标准是SVC的score值，score越高表示，表示参数越好
         '''
+
+        # cv: 10折验证
         clf = SVC(class_weight='balanced', cache_size=4000)
+
+        # grid scv ，网格搜索最佳参数
         gscv = GSCV(clf, param_grid={'C': C_list, 'gamma': gamma_list}, 
                     n_jobs=-1, cv=10, pre_dispatch=4)
         gscv.fit(x_train, y_train)
@@ -130,13 +150,20 @@ class SVM():
         '''
         用拟合的分类器对样本外的数据做预测
         '''
+        # 训练数据是10年数据， 测试数据是下一年的数据
         train_data, test_data = self.data_split(begin_year)
         x_train, y_train = train_data.iloc[:, :-1], train_data.iloc[:, -1]
         x_test, y_test = test_data.iloc[:, :-1], test_data.iloc[:, -1]
-#        C, gamma, score = self.svm_fit(x_train, y_train)
-        C, gamma, score, _ = paras[begin_year]
+
+        # 使用网格搜索最佳参数
+        C, gamma, score = self.svm_fit(x_train, y_train)
+        # C, gamma, score, _ = paras[begin_year]
+
+        # 使用最优参数初始化分类器
         clf = SVC(C=C, gamma=gamma, class_weight='balanced', cache_size=4000)
         clf.fit(x_train, y_train)
+
+        # 计算测试集上的准确率
         test_score = clf.score(x_test, y_test) #测试集上的准确率
         para = C, gamma, score, test_score
         print('%d, %.4f, %.4f, %.4f' % para)
@@ -147,11 +174,19 @@ class SVM():
     def cum_retn(self, years):
         retns = {}
         paras = []
+
+        #
         for i in range(years):
+            # 用拟合的分类器对样本外的数据做预测
             para, label = self.predict(i)
+
+            # 保存训练参数
             paras.append(para)
+
+            # 遍历本次训练的测试集合y 和 y_hat
             for j in range(len(label)):
                 date = label.index[j]
+                # 比较test y 和 y hat
                 if label.loc[date, 'label'] == label.loc[date, 'predict']:
                     #预测正确，则获取多空收益
                     retns[date] = abs(data.loc[date, 'retn']) - self.slippage
@@ -163,10 +198,16 @@ class SVM():
 if __name__ == '__main__':
 
     import matplotlib.pyplot as plt    
-    
-    data = pd.read_excel('E:/Data/HS300_05_18.xlsx', index_col='date')
+
+    # 旧数据
+    # data = pd.read_excel('./Data/HS300_05_18.xlsx', index_col='date')
+    # 最新数据
+    data = pd.read_csv('./data/hs300_latest.csv', index_col='date')
     SVM.data = data
     hs = SVM(3, 3)
+
+    # 数据包含的多少年
+    # 训练样本为10年
     years = int(len(data) / 240) + 1
     paras, nav = hs.cum_retn(years - SVM.train_years)
     def drawdown(nav):
@@ -187,13 +228,15 @@ if __name__ == '__main__':
     ax1.set_ylabel('Net Asset Value', fontdict={'fontsize':16})
     ax1.set_xlabel('Date', fontdict={'fontsize':16})
     ax1.legend(loc='center right', fontsize=16)
+
+    # 共享x坐标轴
     ax2 = ax1.twinx()
     ax2.set_ylim(-1.5, 0)
     ax2.plot(Drawdown, color='c')
     ax2.set_ylabel('Max Drawdown', fontdict={'fontsize':16})
     ax2.fill_between(Drawdown.index, Drawdown, color='c')
     ax2.set_ylim(-1.5, 0)
-    plt.savefig('svm_hs300.png', bbox_inches='tight')
+    plt.savefig('svm_hs300_latest.png', bbox_inches='tight')
     
     for i in range(4):
         train_data, test_data = hs.data_split(i)
